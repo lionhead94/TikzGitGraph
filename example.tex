@@ -1,0 +1,22 @@
+\documentclass{standalone}
+\usepackage{tikzgitgraph}
+
+\begin{document}
+    \scalebox{3}{
+    \begin{gitgraph}
+        \repo[main=true, color=blue, name=main]{main}{0,0}
+            \commit{main}{commit1}
+            \commit{main}{commit2}
+            \branch{main:2}{dev}[color=green!60!black]
+                \commit{dev}{dev-commit1}
+                \commit{dev}{dev-commit2}
+                \commit{dev}{dev-commit3}
+                \branch{dev:3}{fix}[color=red!60!black]
+                    \commit{fix}{fix-commit1}
+                \merge{dev}[childlonger]{fix:1}{Merge fix}
+            \commit{main}{commit3}
+            \commit{main}{commit4}
+            \merge{main}[childlonger]{dev:4}{Merge dev}
+    \end{gitgraph}
+    }
+\end{document}
