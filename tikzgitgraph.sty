@@ -1,0 +1,332 @@
+\ProvidesPackage{tikzgitgraph}
+
+\RequirePackage{xparse}
+\RequirePackage{tikz}
+\usetikzlibrary{calc}
+
+% ===================================================================
+%  Background layer declaration (before \makeatletter so it works globally)
+% ===================================================================
+
+\pgfdeclarelayer{gitg-bg}
+\pgfdeclarelayer{gitg-bg-top}
+\pgfsetlayers{gitg-bg,gitg-bg-top,main}
+
+% ===================================================================
+%  Boolean flags (need \makeatletter so @ is a letter)
+% ===================================================================
+
+\makeatletter
+\newif\ifgit@ismain
+\newif\ifgit@childlonger
+\newif\ifgit@parentlonger
+\makeatother
+
+% ===================================================================
+%  Package keys
+% ===================================================================
+
+\pgfkeys{/gitgraph/.is family, /gitgraph,
+  dir/.initial=tb,
+  step/.initial=0.75cm,
+  xstep/.initial=1.6cm,
+  branchdir/.initial=right,
+  labelsep/.initial=0.2cm,
+  linewidth/.initial=1pt,
+  dotradius/.initial=2pt,
+  round/.initial=4pt,
+  labelstyle/.initial=\ttfamily\tiny,
+  namestyle/.initial=\ttfamily\scriptsize
+}
+
+\pgfkeys{/gitgraph/repo/.is family, /gitgraph/repo,
+  color/.initial=black,
+  name/.initial=,
+  main/.is if=git@ismain,
+  main/.default=true
+}
+
+\pgfkeys{/gitgraph/commit/.is family, /gitgraph/commit,
+  id/.initial=
+}
+
+\pgfkeys{/gitgraph/branch/.is family, /gitgraph/branch,
+  color/.initial=black,
+  offset/.initial=1
+}
+
+\pgfkeys{/gitgraph/merge/.is family, /gitgraph/merge,
+  id/.initial=,
+  childlonger/.is if=git@childlonger,
+  childlonger/.default=true,
+  parentlonger/.is if=git@parentlonger,
+  parentlonger/.default=true
+}
+
+% ===================================================================
+%  Internal helpers
+% ===================================================================
+
+\makeatletter
+
+\def\gitg@empty{}
+\def\gitg@right{right}
+
+% Per-branch storage (using \csname so @ is safe inside macro names)
+\def\gitg@setcolor#1#2{\expandafter\xdef\csname gitgC@#1\endcsname{#2}}
+\def\gitg@getcolor#1{\csname gitgC@#1\endcsname}
+
+\def\gitg@setidx#1#2{\expandafter\xdef\csname gitgI@#1\endcsname{#2}}
+\def\gitg@getidx#1{\csname gitgI@#1\endcsname}
+
+\def\gitg@setlastid#1#2{\expandafter\xdef\csname gitgL@#1\endcsname{#2}}
+\def\gitg@getlastid#1{\csname gitgL@#1\endcsname}
+
+% TikZ node name for commit: "gitn-<branch>-<id>"
+% Branch names and ids must not contain "-" (document author's responsibility).
+\def\gitg@nodename#1#2{gitn-#1-#2}
+
+% Parse "branch:id" into \gitg@srcbranch and \gitg@srcid
+% Splits on the first colon: "main:ma" -> branch="main", id="ma"
+% Constraint: branch names must not contain ":".
+\def\gitg@parseref#1{%
+  \def\gitg@parseref@split##1:##2\@nil{%
+    \def\gitg@srcbranch{##1}%
+    \def\gitg@srcid{##2}%
+  }%
+  \gitg@parseref@split #1\@nil
+}
+
+% Direction setup
+\def\gitg@setup{%
+  \pgfkeys{/gitgraph, step/.get=\gitg@step}%
+  \pgfkeys{/gitgraph, xstep/.get=\gitg@xstep}%
+  \pgfkeys{/gitgraph, dir/.get=\gitg@dir}%
+  \pgfkeys{/gitgraph, linewidth/.get=\gitg@lw}%
+  \pgfkeys{/gitgraph, dotradius/.get=\gitg@dr}%
+  \pgfkeys{/gitgraph, round/.get=\gitg@round}%
+  \def\gitg@dirtb{tb}%
+  \ifx\gitg@dir\gitg@dirtb
+    \def\gitg@dy{-1}%
+  \else
+    \def\gitg@dy{1}%
+  \fi
+}
+
+% Draw a straight line from node #2 to node #3 with color #4,
+% on gitg-bg-top if branch #1 is the main branch, gitg-bg otherwise.
+\def\gitg@drawbranchline#1#2#3#4{%
+  \def\gitg@current{#1}%
+  \ifx\gitg@current\gitg@mainbranch
+    \begin{pgfonlayer}{gitg-bg-top}
+      \draw[line width=\gitg@lw, rounded corners=\gitg@round, color=#4]
+        (#2) -- (#3);
+    \end{pgfonlayer}
+  \else
+    \begin{pgfonlayer}{gitg-bg}
+      \draw[line width=\gitg@lw, rounded corners=\gitg@round, color=#4]
+        (#2) -- (#3);
+    \end{pgfonlayer}
+  \fi
+}
+
+% Draw the commit label for node #1 with color #2 and text #3.
+\def\gitg@drawlabel#1#2#3{%
+  \pgfkeys{/gitgraph, labelstyle/.get=\gitg@ls}%
+  \pgfkeys{/gitgraph, labelsep/.get=\gitg@sep}%
+  \pgfkeys{/gitgraph, branchdir/.get=\gitg@bdir}%
+  \ifx\gitg@bdir\gitg@right
+    \node[font=\gitg@ls, anchor=west, inner sep=0pt,
+          xshift=\gitg@sep, text=#2] at (#1) {#3};
+  \else
+    \node[font=\gitg@ls, anchor=east, inner sep=0pt,
+          xshift=-\gitg@sep, text=#2] at (#1) {#3};
+  \fi
+}
+
+% ===================================================================
+%  Environment
+% ===================================================================
+
+\newenvironment{gitgraph}[1][]{%
+  \gdef\gitg@mainbranch{}%
+  \pgfkeys{/gitgraph, #1}%
+  \gitg@setup
+  \begin{tikzpicture}[x=1cm, y=1cm, line cap=round, line join=round]
+}{%
+  \end{tikzpicture}
+}
+
+\newcommand{\gitgraphsetup}[1]{\pgfkeys{/gitgraph, #1}}
+
+% ===================================================================
+%  \repo[opts]{branch}{coord}
+% ===================================================================
+
+\NewDocumentCommand{\repo}{O{} m m}{%
+  \pgfkeys{/gitgraph/repo, color=black, name=, main=false, #1}%
+  \pgfkeys{/gitgraph/repo, color/.get=\gitg@col}%
+  \pgfkeys{/gitgraph/repo, name/.get=\gitg@name}%
+  \ifgit@ismain
+    \xdef\gitg@mainbranch{#2}%
+  \fi
+  \gitg@setcolor{#2}{\gitg@col}%
+  \gitg@setidx{#2}{0}%
+  \gitg@setlastid{#2}{}%
+  \coordinate (gitc-#2) at (#3);
+  \ifx\gitg@name\gitg@empty\else
+    \pgfkeys{/gitgraph, namestyle/.get=\gitg@ns}%
+    \node[font=\gitg@ns, anchor=center]
+      at ($(gitc-#2) + (0pt, \gitg@dy*0.5*\gitg@step)$) {\gitg@name};
+  \fi
+}
+
+% ===================================================================
+%  Internal commit drawing: \gitg@docommit{branch}{id}{label}{color}
+%  Node name: gitn-<branch>-<id>
+%  Cursor name: gitc-<branch>
+% ===================================================================
+
+\def\gitg@docommit#1#2#3#4{%
+  \coordinate (\gitg@nodename{#1}{#2}) at
+    ($(gitc-#1) + (0pt, \gitg@dy*\gitg@step)$);
+  \edef\gitg@prev{\gitg@getlastid{#1}}%
+  \ifx\gitg@prev\gitg@empty\else
+    \gitg@drawbranchline{#1}{\gitg@nodename{#1}{\gitg@prev}}{\gitg@nodename{#1}{#2}}{#4}%
+  \fi
+  \fill[#4] (\gitg@nodename{#1}{#2}) circle (\gitg@dr);
+  \gitg@drawlabel{\gitg@nodename{#1}{#2}}{#4}{#3}%
+  \coordinate (gitc-#1) at (\gitg@nodename{#1}{#2});
+  \gitg@setlastid{#1}{#2}%
+}
+
+% ===================================================================
+%  \commit{branch}[opts]{label}
+% ===================================================================
+
+\NewDocumentCommand{\commit}{m O{} m}{%
+  \pgfkeys{/gitgraph/commit, id=, #2}%
+  \pgfkeys{/gitgraph/commit, id/.get=\gitg@id}%
+  \ifx\gitg@id\gitg@empty
+    \edef\gitg@curidx{\gitg@getidx{#1}}%
+    \edef\gitg@newidx{\the\numexpr\gitg@curidx+1\relax}%
+    \gitg@setidx{#1}{\gitg@newidx}%
+    \edef\gitg@id{\gitg@newidx}%
+  \fi
+  \edef\gitg@col{\gitg@getcolor{#1}}%
+  \gitg@docommit{#1}{\gitg@id}{#3}{\gitg@col}%
+}
+
+% ===================================================================
+%  \branch{source_ref}{new_branch}[opts]
+%  source_ref: "branch:id"
+% ===================================================================
+
+\NewDocumentCommand{\branch}{m m O{}}{%
+  \pgfkeys{/gitgraph/branch, color=black, offset=1, #3}%
+  \pgfkeys{/gitgraph/branch, color/.get=\gitg@col}%
+  \pgfkeys{/gitgraph/branch, offset/.get=\gitg@off}%
+  \gitg@setcolor{#2}{\gitg@col}%
+  \gitg@setidx{#2}{0}%
+  \gitg@setlastid{#2}{}%
+  \gitg@parseref{#1}%
+  \pgfmathsetlengthmacro{\gitg@xoff}{\gitg@off * \gitg@xstep}%
+  % New branch cursor: horizontally offset from source, same vertical level.
+  % \commit will step it forward on first use.
+  \coordinate (gitc-#2) at
+    ($(\gitg@nodename{\gitg@srcbranch}{\gitg@srcid}) + (\gitg@xoff, 0pt)$);
+  % Fork line: source -> half-step -> elbow across -> half-step to first commit
+  \begin{pgfonlayer}{gitg-bg}
+    \draw[line width=\gitg@lw, rounded corners=\gitg@round, color=\gitg@col]
+      (\gitg@nodename{\gitg@srcbranch}{\gitg@srcid})
+      -- ++(0pt, \gitg@dy*0.5*\gitg@step)
+      -- ($(gitc-#2) + (0pt, \gitg@dy*0.5*\gitg@step)$)
+      -- ($(gitc-#2) + (0pt, \gitg@dy*\gitg@step)$);
+  \end{pgfonlayer}
+}
+
+% ===================================================================
+%  \merge{target_branch}[opts]{source_ref}{label}
+%
+%  Creates a NEW commit node on target_branch (advances its cursor),
+%  then draws the merge line from source_ref to that new node.
+%
+%  source_ref: "branch:id"
+%
+%  Options:
+%    id=<id>             explicit id for the new node (default: auto)
+%    childlonger=true    target extends vertically to align with source
+%    parentlonger=true   source drops vertically to align with target
+%    (default)           standard short-drop elbow
+% ===================================================================
+
+\NewDocumentCommand{\merge}{m O{} m m}{%
+  \pgfkeys{/gitgraph/merge, id=, childlonger=false, parentlonger=false, #2}%
+  \pgfkeys{/gitgraph/merge, id/.get=\gitg@id}%
+  \ifx\gitg@id\gitg@empty
+    \edef\gitg@curidx{\gitg@getidx{#1}}%
+    \edef\gitg@newidx{\the\numexpr\gitg@curidx+1\relax}%
+    \gitg@setidx{#1}{\gitg@newidx}%
+    \edef\gitg@id{\gitg@newidx}%
+  \fi
+  \gitg@parseref{#3}%
+  \edef\gitg@srccol{\gitg@getcolor{\gitg@srcbranch}}%
+  \edef\gitg@tgtcol{\gitg@getcolor{#1}}%
+  \edef\gitg@srcnode{\gitg@nodename{\gitg@srcbranch}{\gitg@srcid}}%
+  \edef\gitg@tgtnode{\gitg@nodename{#1}{\gitg@id}}%
+  \ifgit@childlonger
+    % ---------------------------------------------------------------
+    % CHILDLONGER: target extends to align with source
+    %   Place merge node one step below the SOURCE commit.
+    % ---------------------------------------------------------------
+    \coordinate (\gitg@tgtnode) at
+      ($(gitc-#1 |- \gitg@srcnode) + (0pt, \gitg@dy*\gitg@step)$);
+    \edef\gitg@prev{\gitg@getlastid{#1}}%
+    \ifx\gitg@prev\gitg@empty\else
+      \gitg@drawbranchline{#1}{\gitg@nodename{#1}{\gitg@prev}}{\gitg@tgtnode}{\gitg@tgtcol}%
+    \fi
+    \fill[\gitg@tgtcol] (\gitg@tgtnode) circle (\gitg@dr);
+    \gitg@drawlabel{\gitg@tgtnode}{\gitg@tgtcol}{#4}%
+    \coordinate (gitc-#1) at (\gitg@tgtnode);
+    \gitg@setlastid{#1}{\gitg@id}%
+    % Merge line: source -> down 0.5 -> across -> down 0.5 -> target
+    \begin{pgfonlayer}{gitg-bg}
+      \draw[line width=\gitg@lw, rounded corners=\gitg@round, color=\gitg@srccol]
+        (\gitg@srcnode)
+        -- ++(0pt, \gitg@dy*0.5*\gitg@step)
+        -- ($(\gitg@tgtnode) + (0pt, -\gitg@dy*0.5*\gitg@step)$)
+        -- (\gitg@tgtnode);
+    \end{pgfonlayer}
+  \else
+    \ifgit@parentlonger
+      % -------------------------------------------------------------
+      % PARENTLONGER: source drops to align with target
+      %   Path: source -> down to (target.y - 0.5*step)
+      %                -> across -> down 0.5*step -> target
+      % -------------------------------------------------------------
+      \gitg@docommit{#1}{\gitg@id}{#4}{\gitg@tgtcol}%
+      \begin{pgfonlayer}{gitg-bg}
+        \draw[line width=\gitg@lw, rounded corners=\gitg@round, color=\gitg@srccol]
+          (\gitg@srcnode)
+          -- ($(\gitg@srcnode |- \gitg@tgtnode) + (0pt, -\gitg@dy*0.5*\gitg@step)$)
+          -- ($(\gitg@tgtnode) + (0pt, -\gitg@dy*0.5*\gitg@step)$)
+          -- (\gitg@tgtnode);
+      \end{pgfonlayer}
+    \else
+      % -------------------------------------------------------------
+      % DEFAULT: standard short-drop elbow
+      %   Source -> down 0.5 -> across -> down 0.5 -> target
+      % -------------------------------------------------------------
+      \gitg@docommit{#1}{\gitg@id}{#4}{\gitg@tgtcol}%
+      \begin{pgfonlayer}{gitg-bg}
+        \draw[line width=\gitg@lw, rounded corners=\gitg@round, color=\gitg@srccol]
+          (\gitg@srcnode)
+          -- ++(0pt, \gitg@dy*0.5*\gitg@step)
+          -- ($(\gitg@tgtnode) + (0pt, -\gitg@dy*0.5*\gitg@step)$)
+          -- (\gitg@tgtnode);
+      \end{pgfonlayer}
+    \fi
+  \fi
+}
+
+\makeatother
